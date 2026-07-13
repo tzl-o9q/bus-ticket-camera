@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>バスツアー スタッフ用QRカメラ</title>
+  <style>
+    :root {
+      --bg: #f6f7fb;
+      --card: #ffffff;
+      --text: #17202a;
+      --muted: #667085;
+      --line: #d9dee8;
+      --main: #0b5fff;
+      --ok: #087443;
+      --danger: #d92d20;
+      --warn: #b54708;
+      --shadow: 0 8px 24px rgba(16, 24, 40, 0.08);
+      --radius: 18px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+      padding: 16px;
+    }
+    .wrap { width: 100%; max-width: 780px; margin: 0 auto; padding: 0 14px 28px; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: 13px; margin: 0; }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px;
+      margin: 14px 0;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      color: var(--muted);
+      margin: 10px 0 5px;
+      font-weight: 800;
+    }
+    input {
+      width: 100%;
+      min-height: 46px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 16px;
+      background: #fff;
+    }
+    button {
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      padding: 13px 14px;
+      font-weight: 900;
+      font-size: 16px;
+      margin-top: 12px;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .primary { background: var(--main); color: #fff; }
+    .secondary { background: #eef2f6; color: var(--text); }
+    .danger { background: var(--danger); color: #fff; }
+    .okbtn { background: var(--ok); color: #fff; }
+    .notice, .error, .success, .warn {
+      padding: 13px 15px;
+      border-radius: 14px;
+      margin: 10px 0 14px;
+      font-size: 16px;
+      line-height: 1.65;
+      font-weight: 800;
+    }
+    .notice { background: #eef4ff; color: #183b7a; }
+    .error { background: #fff1f0; color: var(--danger); }
+    .success { background: #ecfdf3; color: var(--ok); }
+    .warn { background: #fff7ed; color: var(--warn); }
+    .scanner {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 3 / 4;
+      min-height: 360px;
+      max-height: 72vh;
+      background: #0b1220;
+      border-radius: 18px;
+      overflow: hidden;
+      border: 2px solid #111827;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      background: #0b1220;
+    }
+    canvas { display: none; }
+    .scan-frame {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: min(70vw, 330px);
+      height: min(70vw, 330px);
+      transform: translate(-50%, -50%);
+      border: 4px solid rgba(255,255,255,0.94);
+      border-radius: 24px;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,0.28);
+      pointer-events: none;
+    }
+    .scan-label {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.82);
+      color: #fff;
+      text-align: center;
+      font-weight: 900;
+      pointer-events: none;
+    }
+    .result-card {
+      border: 2px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      margin: 12px 0 0;
+      background: #fff;
+    }
+    .result-card.ok { border-color: var(--ok); background: #f0fdf4; }
+    .result-card.error { border-color: var(--danger); background: #fff1f0; }
+    .result-main { font-size: 21px; font-weight: 950; margin-bottom: 6px; }
+    .tiny { font-size: 12px; color: var(--muted); word-break: break-all; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 520px) {
+      .grid { grid-template-columns: 1fr; }
+      .wrap { padding-left: 12px; padding-right: 12px; }
+      .scanner { min-height: 330px; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap" style="padding-bottom:0;">
+    <h1>バスツアー スタッフ用QRカメラ</h1>
+    <p class="sub">このページを開いたまま、来場者QRを連続で読み取って乗車処理します。</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="message" class="notice">読み取り準備中です。スタッフパスワードとQR処理ページURLを確認してください。</div>
+
+  <section class="panel" id="setupPanel">
+    <label for="qrAppUrlInput">スタッフ用QR処理ページURL（Apps Script /exec）</label>
+    <input id="qrAppUrlInput" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="url">
+    <label for="adminPinInput">スタッフパスワード</label>
+    <input id="adminPinInput" type="password" placeholder="Settingsシートの admin_pin" autocomplete="current-password">
+    <div class="grid">
+      <button class="primary" type="button" onclick="saveSettingsAndStart()">カメラを起動する</button>
+      <button class="secondary" type="button" onclick="toggleSetup()">設定欄を閉じる</button>
+    </div>
+    <p class="tiny">QR処理ページから開いた場合は自動入力されます。URL内のパスワードは読み込み後すぐ削除します。</p>
+  </section>
+
+  <section class="panel">
+    <div class="scanner">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="canvas"></canvas>
+      <div class="scan-frame"></div>
+      <div class="scan-label" id="scanLabel">カメラ停止中</div>
+    </div>
+    <div class="grid">
+      <button class="primary" type="button" onclick="startCamera()">カメラを起動</button>
+      <button class="secondary" type="button" onclick="stopCamera()">停止</button>
+    </div>
+    <div class="grid">
+      <button class="secondary" type="button" onclick="toggleSetup()">設定を表示</button>
+      <button class="danger" type="button" onclick="clearSavedSettings()">保存設定を削除</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div style="font-weight:950; font-size:18px;">読み取り結果</div>
+    <div id="result" class="result-card">
+      <div class="result-main">まだ読み取っていません</div>
+      <div class="tiny">QRを読み取ると、ここに処理結果が表示されます。</div>
+    </div>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script>
+  const STORAGE_QR_APP_URL = 'campusBusExternalCameraQrAppUrl';
+  const STORAGE_ADMIN_PIN = 'campusBusExternalCameraAdminPin';
+
+  let stream = null;
+  let running = false;
+  let processing = false;
+  let lastCode = '';
+  let lastReadAt = 0;
+  let detector = null;
+
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  window.addEventListener('DOMContentLoaded', init);
+  window.addEventListener('pagehide', stopCamera);
+
+  function init() {
+    const params = new URLSearchParams(location.search);
+    const qrAppUrl = normalizeExecUrl(params.get('qrAppUrl') || params.get('qr_app_url') || localStorage.getItem(STORAGE_QR_APP_URL) || '');
+    const pin = params.get('pin') || params.get('adminPin') || localStorage.getItem(STORAGE_ADMIN_PIN) || '';
+    document.getElementById('qrAppUrlInput').value = qrAppUrl;
+    document.getElementById('adminPinInput').value = pin;
+    if (qrAppUrl) localStorage.setItem(STORAGE_QR_APP_URL, qrAppUrl);
+    if (pin) localStorage.setItem(STORAGE_ADMIN_PIN, pin);
+
+    // URL履歴にスタッフパスワードを残さない。
+    if (params.has('pin') || params.has('adminPin')) {
+      params.delete('pin');
+      params.delete('adminPin');
+      const clean = location.pathname + (params.toString() ? '?' + params.toString() : '') + location.hash;
+      history.replaceState(null, '', clean);
+    }
+
+    if (!window.isSecureContext) {
+      setMessage('このページがHTTPSで開かれていないため、カメラを起動できません。GitHub Pages / Firebase Hosting / Cloudflare PagesなどのHTTPS URLで開いてください。', 'error');
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setMessage('このブラウザではリアルタイムカメラを使用できません。ChromeまたはSafariで開いてください。', 'error');
+      return;
+    }
+    if ('BarcodeDetector' in window) {
+      try { detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (err) { detector = null; }
+    }
+    setMessage('準備できました。「カメラを起動」を押してください。', 'notice');
+  }
+
+  function normalizeExecUrl(url) {
+    let text = String(url || '').trim();
+    if (!text) return '';
+    text = text.replace(/\/dev(?:\?.*)?$/, '/exec');
+    return text;
+  }
+
+  function setMessage(text, type) {
+    const el = document.getElementById('message');
+    el.className = type || 'notice';
+    el.textContent = text || '';
+  }
+
+  function setScanLabel(text) {
+    document.getElementById('scanLabel').textContent = text || '';
+  }
+
+  function setResult(ok, title, details) {
+    const el = document.getElementById('result');
+    el.className = 'result-card ' + (ok ? 'ok' : 'error');
+    el.innerHTML = '<div class="result-main"></div><div class="tiny"></div>';
+    el.querySelector('.result-main').textContent = title || '';
+    el.querySelector('.tiny').textContent = details || '';
+  }
+
+  function saveSettingsAndStart() {
+    const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value);
+    const pin = String(document.getElementById('adminPinInput').value || '').trim();
+    if (!qrAppUrl) return setMessage('スタッフ用QR処理ページURLを入力してください。', 'error');
+    if (!pin) return setMessage('スタッフパスワードを入力してください。', 'error');
+    localStorage.setItem(STORAGE_QR_APP_URL, qrAppUrl);
+    localStorage.setItem(STORAGE_ADMIN_PIN, pin);
+    document.getElementById('qrAppUrlInput').value = qrAppUrl;
+    document.getElementById('setupPanel').style.display = 'none';
+    startCamera();
+  }
+
+  function toggleSetup() {
+    const panel = document.getElementById('setupPanel');
+    panel.style.display = panel.style.display === 'none' ? '' : 'none';
+  }
+
+  function clearSavedSettings() {
+    if (!confirm('保存したQR処理ページURLとスタッフパスワードを削除しますか？')) return;
+    localStorage.removeItem(STORAGE_QR_APP_URL);
+    localStorage.removeItem(STORAGE_ADMIN_PIN);
+    document.getElementById('qrAppUrlInput').value = '';
+    document.getElementById('adminPinInput').value = '';
+    document.getElementById('setupPanel').style.display = '';
+    setMessage('保存設定を削除しました。', 'notice');
+  }
+
+  async function startCamera() {
+    const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_QR_APP_URL));
+    const pin = String(document.getElementById('adminPinInput').value || localStorage.getItem(STORAGE_ADMIN_PIN) || '').trim();
+    if (!qrAppUrl || !pin) {
+      document.getElementById('setupPanel').style.display = '';
+      return setMessage('カメラ起動前に、QR処理ページURLとスタッフパスワードを入力してください。', 'error');
+    }
+    localStorage.setItem(STORAGE_QR_APP_URL, qrAppUrl);
+    localStorage.setItem(STORAGE_ADMIN_PIN, pin);
+
+    try {
+      stopCamera();
+      setMessage('カメラを起動しています...', 'notice');
+      setScanLabel('カメラ起動中...');
+      stream = await openCameraStream();
+      video.srcObject = stream;
+      await video.play();
+      running = true;
+      setMessage('カメラ起動中です。来場者のQRコードを枠内に入れてください。読み取ると自動で乗車処理します。', 'success');
+      setScanLabel('QRコードを枠内に入れてください');
+      requestAnimationFrame(scanLoop);
+    } catch (err) {
+      running = false;
+      setScanLabel('カメラを起動できません');
+      setMessage(cameraErrorText(err), 'error');
+    }
+  }
+
+  async function openCameraStream() {
+    const attempts = [
+      { video: { facingMode: { exact: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+      { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+      { video: true, audio: false }
+    ];
+    let lastError = null;
+    for (const constraints of attempts) {
+      try { return await navigator.mediaDevices.getUserMedia(constraints); }
+      catch (err) { lastError = err; }
+    }
+    throw lastError || new Error('カメラを起動できませんでした。');
+  }
+
+  function stopCamera() {
+    running = false;
+    processing = false;
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    }
+    if (video) video.srcObject = null;
+    setScanLabel('カメラ停止中');
+  }
+
+  async function scanLoop() {
+    if (!running || processing) {
+      if (running) requestAnimationFrame(scanLoop);
+      return;
+    }
+    try {
+      const code = await readQrFromVideo();
+      if (code) {
+        const now = Date.now();
+        if (code !== lastCode || now - lastReadAt > 4500) {
+          lastCode = code;
+          lastReadAt = now;
+          await handleScannedCode(code);
+        }
+      }
+    } catch (err) {}
+    if (running) requestAnimationFrame(scanLoop);
+  }
+
+  async function readQrFromVideo() {
+    if (!video.videoWidth || !video.videoHeight) return '';
+    if (detector) {
+      try {
+        const codes = await detector.detect(video);
+        if (codes && codes.length) return codes[0].rawValue || '';
+      } catch (err) {}
+    }
+    if (!window.jsQR) return '';
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    canvas.width = width;
+    canvas.height = height;
+    ctx.drawImage(video, 0, 0, width, height);
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const result = window.jsQR(imageData.data, width, height, { inversionAttempts: 'attemptBoth' });
+    return result && result.data ? result.data : '';
+  }
+
+  async function handleScannedCode(code) {
+    processing = true;
+    setScanLabel('読み取りました。乗車処理中...');
+    setMessage('QRを読み取りました。乗車処理中です...', 'notice');
+    try {
+      const response = await boardByJsonp(code);
+      if (!response || !response.ok) throw new Error((response && response.error) || '乗車処理に失敗しました。');
+      const r = response.result || {};
+      const title = r.processMessage || '乗車済みにしました。';
+      const details = [r.departureLabel || r.departureTime || '', r.ticketNo || '', r.route || '', r.statusLabel || r.status || ''].filter(Boolean).join(' / ');
+      setResult(true, title, details);
+      setMessage('処理が完了しました。次のQRを読み取れます。', 'success');
+      setScanLabel('次のQRコードを枠内に入れてください');
+      try { navigator.vibrate && navigator.vibrate([80, 40, 80]); } catch (err) {}
+      await wait(1200);
+    } catch (err) {
+      setResult(false, '処理できませんでした', errorText(err));
+      setMessage(errorText(err), 'error');
+      setScanLabel('もう一度QRコードを枠内に入れてください');
+      await wait(1800);
+    } finally {
+      processing = false;
+    }
+  }
+
+  function boardByJsonp(rawCode) {
+    const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_QR_APP_URL));
+    const pin = String(document.getElementById('adminPinInput').value || localStorage.getItem(STORAGE_ADMIN_PIN) || '').trim();
+    return jsonp(qrAppUrl, {
+      api: 'boardJsonp',
+      pin: pin,
+      code: rawCode
+    }, 20000);
+  }
+
+  function jsonp(baseUrl, params, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      if (!baseUrl) return reject(new Error('QR処理ページURLが未設定です。'));
+      const callbackName = '__busQrCb_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+      const script = document.createElement('script');
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('通信がタイムアウトしました。電波状況を確認してください。'));
+      }, timeoutMs || 20000);
+      function cleanup() {
+        clearTimeout(timer);
+        try { delete window[callbackName]; } catch (err) { window[callbackName] = undefined; }
+        if (script.parentNode) script.parentNode.removeChild(script);
+      }
+      window[callbackName] = data => {
+        cleanup();
+        resolve(data);
+      };
+      const query = new URLSearchParams(Object.assign({}, params, { callback: callbackName }));
+      script.onerror = () => {
+        cleanup();
+        reject(new Error('QR処理ページへ接続できませんでした。'));
+      };
+      script.src = baseUrl + (baseUrl.indexOf('?') >= 0 ? '&' : '?') + query.toString();
+      document.head.appendChild(script);
+    });
+  }
+
+  function errorText(err) {
+    if (!err) return 'エラーが発生しました。';
+    return String(err.message || err.error || err);
+  }
+
+  function cameraErrorText(err) {
+    const name = String(err && err.name || '');
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      return 'カメラが許可されていません。ブラウザのアドレスバー付近のカメラ許可、または端末設定を確認してください。LINE等のアプリ内ブラウザではなくChrome/Safariで開いてください。';
+    }
+    if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+      return '利用できるカメラが見つかりません。別のブラウザまたは端末でお試しください。';
+    }
+    if (name === 'NotReadableError') {
+      return '他のアプリがカメラを使用している可能性があります。他のカメラアプリを閉じてから再度お試しください。';
+    }
+    return 'カメラを起動できませんでした。' + errorText(err);
+  }
+
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+</script>
+</body>
+</html>
