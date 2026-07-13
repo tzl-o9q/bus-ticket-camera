@@ -154,8 +154,70 @@
       background: #fff;
     }
     .result-card.ok { border-color: var(--ok); background: #f0fdf4; }
+    .result-card.already { border-color: var(--warn); background: #fff7ed; }
     .result-card.error { border-color: var(--danger); background: #fff1f0; }
     .result-main { font-size: 21px; font-weight: 950; margin-bottom: 6px; }
+    .result-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(15, 23, 42, 0.78);
+    }
+    .result-overlay[hidden] { display: none !important; }
+    .result-overlay-card {
+      width: min(92vw, 620px);
+      border-radius: 28px;
+      padding: 28px 22px 24px;
+      background: #fff;
+      text-align: center;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.30);
+      border: 6px solid var(--ok);
+    }
+    .result-overlay-card.ok { border-color: var(--ok); }
+    .result-overlay-card.already { border-color: var(--warn); }
+    .result-overlay-card.error { border-color: var(--danger); }
+    .result-overlay-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 88px;
+      height: 88px;
+      border-radius: 999px;
+      margin-bottom: 14px;
+      font-size: 52px;
+      font-weight: 950;
+      color: #fff;
+      background: var(--ok);
+    }
+    .result-overlay-card.already .result-overlay-icon { background: var(--warn); }
+    .result-overlay-card.error .result-overlay-icon { background: var(--danger); }
+    .result-overlay-title {
+      font-size: clamp(28px, 7.5vw, 48px);
+      line-height: 1.16;
+      font-weight: 1000;
+      letter-spacing: -0.03em;
+      margin: 4px 0 12px;
+    }
+    .result-overlay-details {
+      font-size: clamp(15px, 4.2vw, 22px);
+      line-height: 1.55;
+      font-weight: 850;
+      color: var(--muted);
+      word-break: break-word;
+    }
+    .result-overlay-close {
+      width: auto;
+      min-width: 180px;
+      margin-top: 20px;
+      padding-left: 22px;
+      padding-right: 22px;
+      background: #eef2f6;
+      color: var(--text);
+    }
     .tiny { font-size: 12px; color: var(--muted); word-break: break-all; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     @media (max-width: 520px) {
@@ -215,6 +277,15 @@
   </section>
 </main>
 
+<div id="scanResultOverlay" class="result-overlay" hidden onclick="closeBigResult()">
+  <div id="scanResultOverlayCard" class="result-overlay-card ok" onclick="event.stopPropagation()">
+    <div id="scanResultOverlayIcon" class="result-overlay-icon">✓</div>
+    <div id="scanResultOverlayTitle" class="result-overlay-title">乗車確認完了</div>
+    <div id="scanResultOverlayDetails" class="result-overlay-details"></div>
+    <button type="button" class="result-overlay-close" onclick="closeBigResult()">閉じる</button>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 <script>
   const STORAGE_QR_APP_URL = 'campusBusExternalCameraQrAppUrl';
@@ -228,6 +299,7 @@
   let detector = null;
   let scanLoopStartedAt = 0;
   let lastSearchingHintAt = 0;
+  let resultOverlayTimer = null;
   const SCAN_CANVAS_MAX = 980;
 
   const video = document.getElementById('video');
@@ -285,12 +357,38 @@
     document.getElementById('scanLabel').textContent = text || '';
   }
 
-  function setResult(ok, title, details) {
+  function setResult(ok, title, details, type) {
     const el = document.getElementById('result');
-    el.className = 'result-card ' + (ok ? 'ok' : 'error');
+    const cls = type || (ok ? 'ok' : 'error');
+    el.className = 'result-card ' + cls;
     el.innerHTML = '<div class="result-main"></div><div class="tiny"></div>';
     el.querySelector('.result-main').textContent = title || '';
     el.querySelector('.tiny').textContent = details || '';
+  }
+
+  function showBigResult(type, title, details, holdMs) {
+    const overlay = document.getElementById('scanResultOverlay');
+    const card = document.getElementById('scanResultOverlayCard');
+    const icon = document.getElementById('scanResultOverlayIcon');
+    const titleEl = document.getElementById('scanResultOverlayTitle');
+    const detailsEl = document.getElementById('scanResultOverlayDetails');
+    if (!overlay || !card || !icon || !titleEl || !detailsEl) return;
+    const cls = type === 'already' ? 'already' : (type === 'error' ? 'error' : 'ok');
+    card.className = 'result-overlay-card ' + cls;
+    icon.textContent = cls === 'ok' ? '✓' : (cls === 'already' ? '!' : '×');
+    titleEl.textContent = title || '';
+    detailsEl.textContent = details || '';
+    overlay.hidden = false;
+    clearTimeout(resultOverlayTimer);
+    const ms = Number(holdMs || 0);
+    if (ms > 0) resultOverlayTimer = setTimeout(closeBigResult, ms);
+  }
+
+  function closeBigResult() {
+    clearTimeout(resultOverlayTimer);
+    resultOverlayTimer = null;
+    const overlay = document.getElementById('scanResultOverlay');
+    if (overlay) overlay.hidden = true;
   }
 
   function saveSettingsAndStart() {
@@ -519,16 +617,20 @@
       const response = await boardByJsonp(code);
       if (!response || !response.ok) throw new Error((response && response.error) || '乗車処理に失敗しました。');
       const r = response.result || {};
-      const title = r.processMessage || '乗車済みにしました。';
+      const isAlready = r.processResult === 'ALREADY_BOARDED';
+      const title = isAlready ? 'この整理券はすでに乗車確認済みです' : (r.processMessage || '乗車済みにしました。');
       const details = [r.departureLabel || r.departureTime || '', r.ticketNo || '', r.route || '', r.statusLabel || r.status || ''].filter(Boolean).join(' / ');
-      setResult(true, title, details);
-      setMessage('処理が完了しました。次のQRを読み取れます。', 'success');
-      setScanLabel('次のQRコードを枠内に入れてください');
-      try { navigator.vibrate && navigator.vibrate([80, 40, 80]); } catch (err) {}
-      await wait(1200);
+      setResult(true, title, details, isAlready ? 'already' : 'ok');
+      showBigResult(isAlready ? 'already' : 'ok', title, details, isAlready ? 2200 : 1700);
+      setMessage(isAlready ? '乗車確認済みの整理券です。次のQRを読み取れます。' : '処理が完了しました。次のQRを読み取れます。', isAlready ? 'warn' : 'success');
+      setScanLabel(isAlready ? '乗車確認済みです。次のQRコードを枠内に入れてください' : '次のQRコードを枠内に入れてください');
+      try { navigator.vibrate && navigator.vibrate(isAlready ? [180, 60, 180] : [80, 40, 80]); } catch (err) {}
+      await wait(isAlready ? 1600 : 1200);
     } catch (err) {
-      setResult(false, '処理できませんでした', errorText(err));
-      setMessage(errorText(err), 'error');
+      const msg = errorText(err);
+      setResult(false, '処理できませんでした', msg, 'error');
+      showBigResult('error', '処理できませんでした', msg, 2600);
+      setMessage(msg, 'error');
       setScanLabel('もう一度QRコードを枠内に入れてください');
       await wait(1800);
     } finally {
