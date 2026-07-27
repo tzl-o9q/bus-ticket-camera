@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -160,14 +159,16 @@
     .result-overlay {
       position: fixed;
       inset: 0;
-      z-index: 9999;
-      display: flex;
+      z-index: 2147483000;
+      display: none;
       align-items: center;
       justify-content: center;
-      padding: 20px;
-      background: rgba(15, 23, 42, 0.78);
+      padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+      background: rgba(15, 23, 42, 0.86);
     }
-    .result-overlay[hidden] { display: none !important; }
+    .result-overlay.is-visible { display: flex !important; }
+    .result-overlay[hidden]:not(.is-visible) { display: none !important; }
+    body.result-overlay-open { overflow: hidden; }
     .result-overlay-card {
       width: min(92vw, 620px);
       border-radius: 28px;
@@ -225,9 +226,11 @@
       .wrap { padding-left: 12px; padding-right: 12px; }
       .scanner { min-height: 330px; }
     }
-  </style>
+    .test-camera-banner{display:none;padding:10px 12px;background:#fff3cd;border:2px solid #f59e0b;border-radius:12px;color:#7c2d12;font-weight:900;text-align:center;margin-bottom:12px}.test-mode .test-camera-banner{display:block}.test-mode header{border-color:#f59e0b}
+</style>
 </head>
 <body>
+  <div id="testCameraBanner" class="test-camera-banner">スタッフテスト用カメラ<br>本番整理券は処理できません</div>
 <header>
   <div class="wrap" style="padding-bottom:0;">
     <h1>バスツアー スタッフ用QRカメラ</h1>
@@ -277,7 +280,7 @@
   </section>
 </main>
 
-<div id="scanResultOverlay" class="result-overlay" hidden onclick="closeBigResult()">
+<div id="scanResultOverlay" class="result-overlay" hidden role="dialog" aria-live="assertive" aria-modal="true" onclick="closeBigResult()">
   <div id="scanResultOverlayCard" class="result-overlay-card ok" onclick="event.stopPropagation()">
     <div id="scanResultOverlayIcon" class="result-overlay-icon">✓</div>
     <div id="scanResultOverlayTitle" class="result-overlay-title">乗車確認完了</div>
@@ -301,6 +304,8 @@
   let lastSearchingHintAt = 0;
   let resultOverlayTimer = null;
   const SCAN_CANVAS_MAX = 980;
+  let TEST_MODE = false;
+  let TEST_TOKEN = '';
 
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
@@ -313,6 +318,9 @@
     const params = new URLSearchParams(location.search);
     const qrAppUrl = normalizeExecUrl(params.get('qrAppUrl') || params.get('qr_app_url') || localStorage.getItem(STORAGE_QR_APP_URL) || '');
     const pin = params.get('pin') || params.get('adminPin') || localStorage.getItem(STORAGE_ADMIN_PIN) || '';
+    TEST_TOKEN = String(params.get('testToken') || params.get('test_token') || '').trim();
+    TEST_MODE = String(params.get('testMode') || '').trim() === '1' || Boolean(TEST_TOKEN);
+    if (TEST_MODE) document.body.classList.add('test-mode');
     document.getElementById('qrAppUrlInput').value = qrAppUrl;
     document.getElementById('adminPinInput').value = pin;
     if (qrAppUrl) localStorage.setItem(STORAGE_QR_APP_URL, qrAppUrl);
@@ -337,7 +345,7 @@
     if ('BarcodeDetector' in window) {
       try { detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (err) { detector = null; }
     }
-    setMessage('準備できました。「カメラを起動」を押してください。', 'notice');
+    setMessage(TEST_MODE ? 'テスト用カメラです。「カメラを起動」を押してください。' : '準備できました。「カメラを起動」を押してください。', 'notice');
   }
 
   function normalizeExecUrl(url) {
@@ -373,12 +381,22 @@
     const titleEl = document.getElementById('scanResultOverlayTitle');
     const detailsEl = document.getElementById('scanResultOverlayDetails');
     if (!overlay || !card || !icon || !titleEl || !detailsEl) return;
+
+    // iOS Safari / Android Chromeで hidden 属性の反映が遅れる場合に備え、
+    // hidden・class・inline style の3方向から確実に全画面表示する。
     const cls = type === 'already' ? 'already' : (type === 'error' ? 'error' : 'ok');
     card.className = 'result-overlay-card ' + cls;
     icon.textContent = cls === 'ok' ? '✓' : (cls === 'already' ? '!' : '×');
     titleEl.textContent = title || '';
     detailsEl.textContent = details || '';
+
+    document.body.appendChild(overlay);
     overlay.hidden = false;
+    overlay.removeAttribute('hidden');
+    overlay.classList.add('is-visible');
+    overlay.style.display = 'flex';
+    document.body.classList.add('result-overlay-open');
+
     clearTimeout(resultOverlayTimer);
     const ms = Number(holdMs || 0);
     if (ms > 0) resultOverlayTimer = setTimeout(closeBigResult, ms);
@@ -388,7 +406,11 @@
     clearTimeout(resultOverlayTimer);
     resultOverlayTimer = null;
     const overlay = document.getElementById('scanResultOverlay');
-    if (overlay) overlay.hidden = true;
+    if (!overlay) return;
+    overlay.classList.remove('is-visible');
+    overlay.style.display = 'none';
+    overlay.hidden = true;
+    document.body.classList.remove('result-overlay-open');
   }
 
   function saveSettingsAndStart() {
@@ -621,18 +643,20 @@
       const title = isAlready ? 'この整理券はすでに乗車確認済みです' : (r.processMessage || '乗車済みにしました。');
       const details = [r.departureLabel || r.departureTime || '', r.ticketNo || '', r.route || '', r.statusLabel || r.status || ''].filter(Boolean).join(' / ');
       setResult(true, title, details, isAlready ? 'already' : 'ok');
-      showBigResult(isAlready ? 'already' : 'ok', title, details, isAlready ? 2200 : 1700);
+      const holdMs = isAlready ? 3600 : 3000;
+      showBigResult(isAlready ? 'already' : 'ok', title, details, holdMs);
       setMessage(isAlready ? '乗車確認済みの整理券です。次のQRを読み取れます。' : '処理が完了しました。次のQRを読み取れます。', isAlready ? 'warn' : 'success');
       setScanLabel(isAlready ? '乗車確認済みです。次のQRコードを枠内に入れてください' : '次のQRコードを枠内に入れてください');
       try { navigator.vibrate && navigator.vibrate(isAlready ? [180, 60, 180] : [80, 40, 80]); } catch (err) {}
-      await wait(isAlready ? 1600 : 1200);
+      await wait(holdMs);
     } catch (err) {
       const msg = errorText(err);
       setResult(false, '処理できませんでした', msg, 'error');
-      showBigResult('error', '処理できませんでした', msg, 2600);
+      const holdMs = 3800;
+      showBigResult('error', '処理できませんでした', msg, holdMs);
       setMessage(msg, 'error');
       setScanLabel('もう一度QRコードを枠内に入れてください');
-      await wait(1800);
+      await wait(holdMs);
     } finally {
       processing = false;
     }
@@ -644,7 +668,8 @@
     return jsonp(qrAppUrl, {
       api: 'boardJsonp',
       pin: pin,
-      code: rawCode
+      code: rawCode,
+      testToken: TEST_TOKEN
     }, 20000);
   }
 
