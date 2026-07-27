@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="ja">
 <head>
@@ -253,10 +254,47 @@
       const loadingError = document.getElementById('loadingError');
       let errorCount = 0;
 
-      backButton.addEventListener('click', () => {
-        if (history.length > 1) history.back();
-        else location.href = './';
-      });
+      const params = new URLSearchParams(window.location.search);
+      const rawReturnUrl = String(params.get('return_url') || '').trim();
+      const returnUrl = /^https:\/\//i.test(rawReturnUrl) ? rawReturnUrl : '';
+      let returning = false;
+
+      function returnToTicketPage() {
+        if (returning) return;
+        returning = true;
+        backButton.disabled = true;
+        backButton.textContent = '戻っています…';
+
+        if (returnUrl) {
+          try {
+            const target = new URL(returnUrl);
+            // bfcache（戻るキャッシュ）を使わず、整理券ページを新しく読み込みます。
+            target.searchParams.set('return_from', 'bus_tour_material');
+            target.searchParams.set('_reload', String(Date.now()));
+            window.location.replace(target.toString());
+            return;
+          } catch (err) {
+            window.location.replace(returnUrl);
+            return;
+          }
+        }
+
+        // 古い整理券ページから開かれた場合だけの予備動作です。
+        if (document.referrer && /^https:\/\//i.test(document.referrer)) {
+          window.location.replace(document.referrer);
+          return;
+        }
+        window.location.replace('./');
+      }
+
+      backButton.addEventListener('click', returnToTicketPage);
+
+      // スマートフォン本体・ブラウザの戻る操作でも白画面を経由しないようにします。
+      if (returnUrl) {
+        history.replaceState({ materialViewer: true }, '', window.location.href);
+        history.pushState({ materialViewerGuard: true }, '', window.location.href);
+        window.addEventListener('popstate', returnToTicketPage);
+      }
 
       document.querySelectorAll('.page-card img').forEach(img => {
         img.addEventListener('error', () => {
