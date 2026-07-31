@@ -293,7 +293,8 @@
 <script>
   const STORAGE_QR_APP_URL = 'campusBusExternalCameraQrAppUrl';
   const STORAGE_PROCESS_API_URL = 'campusBusExternalCameraProcessApiUrlV2';
-  const STORAGE_ADMIN_PIN = 'campusBusExternalCameraAdminPin';
+  const STORAGE_ADMIN_PIN = 'campusBusExternalCameraAdminPin'; // 旧版削除専用
+  const STORAGE_STAFF_SESSION = 'campusBusExternalCameraStaffSessionV1';
 
   let stream = null;
   let running = false;
@@ -304,6 +305,9 @@
   let scanLoopStartedAt = 0;
   let lastSearchingHintAt = 0;
   let resultOverlayTimer = null;
+  let congestionHintTimer = null;
+  let warmupPromise = null;
+  let scanFrameCounter = 0;
   const SCAN_CANVAS_MAX = 980;
   let TEST_MODE = false;
   let TEST_TOKEN = '';
@@ -320,7 +324,9 @@
     const directProcessUrl = normalizeExecUrl(params.get('processApiUrl') || params.get('process_api_url') || params.get('mainAppUrl') || params.get('main_app_url') || localStorage.getItem(STORAGE_PROCESS_API_URL) || '');
     const legacyQrUrl = normalizeExecUrl(params.get('qrAppUrl') || params.get('qr_app_url') || localStorage.getItem(STORAGE_QR_APP_URL) || '');
     const qrAppUrl = directProcessUrl || legacyQrUrl;
-    const pin = params.get('pin') || params.get('adminPin') || localStorage.getItem(STORAGE_ADMIN_PIN) || '';
+    const urlCredential = params.get('staffSession') || params.get('pin') || params.get('adminPin') || '';
+    const savedSession = getSavedStaffSession();
+    const pin = isStaffSessionToken(urlCredential) ? urlCredential : (savedSession || urlCredential || '');
     TEST_TOKEN = String(params.get('testToken') || params.get('test_token') || '').trim();
     TEST_MODE = String(params.get('testMode') || '').trim() === '1' || Boolean(TEST_TOKEN);
     if (TEST_MODE) document.body.classList.add('test-mode');
@@ -329,10 +335,12 @@
     if (directProcessUrl) localStorage.setItem(STORAGE_PROCESS_API_URL, directProcessUrl);
     if (legacyQrUrl) localStorage.setItem(STORAGE_QR_APP_URL, legacyQrUrl);
     if (qrAppUrl && !directProcessUrl && !legacyQrUrl) localStorage.setItem(STORAGE_PROCESS_API_URL, qrAppUrl);
-    if (pin) localStorage.setItem(STORAGE_ADMIN_PIN, pin);
+    if (isStaffSessionToken(pin)) saveStaffSession(pin);
+    try { localStorage.removeItem(STORAGE_ADMIN_PIN); } catch (err) {}
 
     // URL履歴にスタッフパスワードを残さない。
-    if (params.has('pin') || params.has('adminPin')) {
+    if (params.has('staffSession') || params.has('pin') || params.has('adminPin')) {
+      params.delete('staffSession');
       params.delete('pin');
       params.delete('adminPin');
       const clean = location.pathname + (params.toString() ? '?' + params.toString() : '') + location.hash;
@@ -358,6 +366,56 @@
     if (!text) return '';
     text = text.replace(/\/dev(?:\?.*)?$/, '/exec');
     return text;
+  }
+
+  function isStaffSessionToken(value) {
+    return String(value || '').startsWith('STF1.');
+  }
+
+  function decodeStaffSessionExpiry(token) {
+    try {
+      const parts = String(token || '').split('.');
+      if (parts.length !== 3 || parts[0] !== 'STF1') return 0;
+      let payloadPart = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (payloadPart.length % 4) payloadPart += '=';
+      const json = decodeURIComponent(Array.from(atob(payloadPart)).map(ch => '%' + ch.charCodeAt(0).toString(16).padStart(2, '0')).join(''));
+      return Number(JSON.parse(json).exp || 0);
+    } catch (err) { return 0; }
+  }
+
+  function getSavedStaffSession() {
+    try {
+      const token = String(localStorage.getItem(STORAGE_STAFF_SESSION) || '').trim();
+      if (!isStaffSessionToken(token) || decodeStaffSessionExpiry(token) <= Date.now()) {
+        localStorage.removeItem(STORAGE_STAFF_SESSION);
+        return '';
+      }
+      return token;
+    } catch (err) { return ''; }
+  }
+
+  function saveStaffSession(token) {
+    const value = String(token || '').trim();
+    if (!isStaffSessionToken(value) || decodeStaffSessionExpiry(value) <= Date.now()) return false;
+    try {
+      localStorage.setItem(STORAGE_STAFF_SESSION, value);
+      localStorage.removeItem(STORAGE_ADMIN_PIN);
+    } catch (err) {}
+    document.getElementById('adminPinInput').value = value;
+    return true;
+  }
+
+  async function ensureStaffSession(qrAppUrl, credential) {
+    const value = String(credential || '').trim();
+    if (isStaffSessionToken(value) && decodeStaffSessionExpiry(value) > Date.now()) {
+      saveStaffSession(value);
+      return value;
+    }
+    const response = await jsonp(qrAppUrl, { api: 'verifyJsonp', pin: value }, 12000);
+    if (!response || !response.ok) throw new Error((response && response.error) || 'スタッフ認証に失敗しました。');
+    const token = String(response.staffSessionToken || '').trim();
+    if (!saveStaffSession(token)) throw new Error('スタッフ認証情報を保存できませんでした。');
+    return token;
   }
 
   function setMessage(text, type) {
@@ -418,16 +476,21 @@
     document.body.classList.remove('result-overlay-open');
   }
 
-  function saveSettingsAndStart() {
+  async function saveSettingsAndStart() {
     const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value);
-    const pin = String(document.getElementById('adminPinInput').value || '').trim();
+    const credential = String(document.getElementById('adminPinInput').value || getSavedStaffSession() || '').trim();
     if (!qrAppUrl) return setMessage('乗車処理API URLを入力してください。', 'error');
-    if (!pin) return setMessage('スタッフパスワードを入力してください。', 'error');
-    localStorage.setItem(STORAGE_PROCESS_API_URL, qrAppUrl);
-    localStorage.setItem(STORAGE_ADMIN_PIN, pin);
-    document.getElementById('qrAppUrlInput').value = qrAppUrl;
-    document.getElementById('setupPanel').style.display = 'none';
-    startCamera();
+    if (!credential) return setMessage('スタッフパスワードを入力してください。', 'error');
+    try {
+      setMessage('スタッフ認証を確認しています...', 'notice');
+      await ensureStaffSession(qrAppUrl, credential);
+      localStorage.setItem(STORAGE_PROCESS_API_URL, qrAppUrl);
+      document.getElementById('qrAppUrlInput').value = qrAppUrl;
+      document.getElementById('setupPanel').style.display = 'none';
+      await startCamera();
+    } catch (err) {
+      setMessage(errorText(err), 'error');
+    }
   }
 
   function toggleSetup() {
@@ -440,6 +503,7 @@
     localStorage.removeItem(STORAGE_QR_APP_URL);
     localStorage.removeItem(STORAGE_PROCESS_API_URL);
     localStorage.removeItem(STORAGE_ADMIN_PIN);
+    localStorage.removeItem(STORAGE_STAFF_SESSION);
     document.getElementById('qrAppUrlInput').value = '';
     document.getElementById('adminPinInput').value = '';
     document.getElementById('setupPanel').style.display = '';
@@ -448,15 +512,16 @@
 
   async function startCamera() {
     const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_PROCESS_API_URL) || localStorage.getItem(STORAGE_QR_APP_URL));
-    const pin = String(document.getElementById('adminPinInput').value || localStorage.getItem(STORAGE_ADMIN_PIN) || '').trim();
-    if (!qrAppUrl || !pin) {
+    const rawCredential = String(document.getElementById('adminPinInput').value || getSavedStaffSession() || '').trim();
+    if (!qrAppUrl || !rawCredential) {
       document.getElementById('setupPanel').style.display = '';
       return setMessage('カメラ起動前に、乗車処理API URLとスタッフパスワードを入力してください。', 'error');
     }
-    localStorage.setItem(STORAGE_PROCESS_API_URL, qrAppUrl);
-    localStorage.setItem(STORAGE_ADMIN_PIN, pin);
 
     try {
+      const staffSession = await ensureStaffSession(qrAppUrl, rawCredential);
+      localStorage.setItem(STORAGE_PROCESS_API_URL, qrAppUrl);
+      document.getElementById('adminPinInput').value = staffSession;
       stopCamera();
       setMessage('カメラを起動しています...', 'notice');
       setScanLabel('カメラ起動中...');
@@ -469,6 +534,7 @@
       setMessage('カメラ起動中です。来場者のQRコードを枠内に入れてください。読み取ると自動で乗車処理します。', 'success');
       setScanLabel('QRコードを枠内に入れてください');
       requestAnimationFrame(scanLoop);
+      warmupPromise = warmupBoardingApi(qrAppUrl, staffSession);
     } catch (err) {
       running = false;
       setScanLabel('カメラを起動できません');
@@ -522,6 +588,28 @@
     setScanLabel('カメラ停止中');
   }
 
+  async function warmupBoardingApi(baseUrl, staffSession) {
+    try {
+      return await jsonp(baseUrl, { api: 'warmupJsonp', staffSession: staffSession }, 15000);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function startCongestionHint() {
+    clearTimeout(congestionHintTimer);
+    congestionHintTimer = setTimeout(() => {
+      if (!processing) return;
+      setMessage('現在アクセスが集中しているため、乗車処理に時間がかかっています。順番に処理していますので、そのままお待ちください。', 'warn');
+      setScanLabel('アクセス集中のため順番に処理しています...');
+    }, 1400);
+  }
+
+  function stopCongestionHint() {
+    clearTimeout(congestionHintTimer);
+    congestionHintTimer = null;
+  }
+
   async function scanLoop() {
     if (!running || processing) {
       if (running) requestAnimationFrame(scanLoop);
@@ -556,9 +644,11 @@
 
     const width = video.videoWidth;
     const height = video.videoHeight;
+    scanFrameCounter += 1;
     const candidates = buildScanCandidates(width, height);
-    for (const candidate of candidates) {
-      const decoded = decodeCandidate(candidate);
+    for (let i = 0; i < candidates.length; i++) {
+      const allowEnhanced = (scanFrameCounter % 3 === 0) && i === 0;
+      const decoded = decodeCandidate(candidates[i], allowEnhanced);
       if (decoded) return normalizeScannedText(decoded);
     }
 
@@ -571,15 +661,15 @@
     const list = [];
     // Prefer the center area that matches the on-screen frame, then try wider
     // crops and finally the full frame.
-    [0.64, 0.78, 0.92].forEach(ratio => {
+    [0.70, 0.90].forEach(ratio => {
       const size = Math.round(minSide * ratio);
       list.push({ sx: Math.round((width - size) / 2), sy: Math.round((height - size) / 2), sw: size, sh: size });
     });
-    list.push({ sx: 0, sy: 0, sw: width, sh: height });
+    if (scanFrameCounter % 4 === 0) list.push({ sx: 0, sy: 0, sw: width, sh: height });
     return list;
   }
 
-  function decodeCandidate(candidate) {
+  function decodeCandidate(candidate, allowEnhanced) {
     const scale = Math.min(SCAN_CANVAS_MAX / candidate.sw, SCAN_CANVAS_MAX / candidate.sh, 1);
     const outW = Math.max(1, Math.round(candidate.sw * scale));
     const outH = Math.max(1, Math.round(candidate.sh * scale));
@@ -595,6 +685,7 @@
     const normal = window.jsQR(imageData.data, outW, outH, { inversionAttempts: 'attemptBoth' });
     if (normal && normal.data) return normal.data;
 
+    if (!allowEnhanced) return '';
     const enhanced = enhanceForQr(imageData);
     const retry = window.jsQR(enhanced.data, outW, outH, { inversionAttempts: 'attemptBoth' });
     return retry && retry.data ? retry.data : '';
@@ -641,6 +732,7 @@
     processing = true;
     setScanLabel('読み取りました。乗車処理中...');
     setMessage('QRを読み取りました。乗車処理中です...', 'notice');
+    startCongestionHint();
     try {
       const response = await boardByJsonp(code);
       if (!response || !response.ok) throw new Error((response && response.error) || '乗車処理に失敗しました。');
@@ -649,49 +741,52 @@
       const title = isAlready ? 'この整理券はすでに乗車確認済みです' : (r.processMessage || '乗車済みにしました。');
       const details = [r.departureLabel || r.departureTime || '', r.ticketNo || '', r.route || '', r.statusLabel || r.status || ''].filter(Boolean).join(' / ');
       setResult(true, title, details, isAlready ? 'already' : 'ok');
-      const holdMs = isAlready ? 1200 : 750;
+      const holdMs = isAlready ? 520 : 320;
       showBigResult(isAlready ? 'already' : 'ok', title, details, holdMs);
       setMessage(isAlready ? '乗車確認済みの整理券です。次のQRを読み取れます。' : '処理が完了しました。次のQRを読み取れます。', isAlready ? 'warn' : 'success');
       setScanLabel(isAlready ? '乗車確認済みです。次のQRコードを枠内に入れてください' : '次のQRコードを枠内に入れてください');
       try { navigator.vibrate && navigator.vibrate(isAlready ? [180, 60, 180] : [80, 40, 80]); } catch (err) {}
-      await wait(holdMs);
+      await wait(isAlready ? 140 : 70);
     } catch (err) {
       const msg = errorText(err);
       setResult(false, '処理できませんでした', msg, 'error');
-      const holdMs = 2600;
+      const holdMs = 1500;
       showBigResult('error', '処理できませんでした', msg, holdMs);
       setMessage(msg, 'error');
       setScanLabel('もう一度QRコードを枠内に入れてください');
-      await wait(holdMs);
+      await wait(500);
     } finally {
+      stopCongestionHint();
       processing = false;
     }
   }
 
   async function boardByJsonp(rawCode) {
     const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_PROCESS_API_URL) || localStorage.getItem(STORAGE_QR_APP_URL));
-    const pin = String(document.getElementById('adminPinInput').value || localStorage.getItem(STORAGE_ADMIN_PIN) || '').trim();
+    const staffSession = String(document.getElementById('adminPinInput').value || getSavedStaffSession() || '').trim();
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const response = await jsonp(qrAppUrl, {
           api: 'boardJsonp',
-          pin: pin,
+          staffSession: staffSession,
           code: rawCode,
           testToken: TEST_TOKEN
-        }, 22000);
+        }, 12000);
         const message = String((response && response.error) || '');
         if (response && response.ok) return response;
-        if (attempt === 0 && /アクセスが集中|タイムアウト|一時的|Service invoked too many times/i.test(message)) {
-          await wait(250 + Math.floor(Math.random() * 250));
+        if (attempt < 2 && /アクセスが集中|タイムアウト|一時的|Service invoked too many times/i.test(message)) {
+          setMessage('現在アクセスが集中しています。自動で再試行しています...', 'warn');
+          await wait(140 + Math.floor(Math.random() * 180));
           continue;
         }
         return response;
       } catch (err) {
         lastError = err;
         const message = errorText(err);
-        if (attempt === 0 && /タイムアウト|接続できません|network|通信/i.test(message)) {
-          await wait(250 + Math.floor(Math.random() * 250));
+        if (attempt < 2 && /タイムアウト|接続できません|network|通信/i.test(message)) {
+          setMessage('通信が混雑しています。自動で再試行しています...', 'warn');
+          await wait(140 + Math.floor(Math.random() * 180));
           continue;
         }
         throw err;
