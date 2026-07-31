@@ -222,10 +222,27 @@
     }
     .tiny { font-size: 12px; color: var(--muted); word-break: break-all; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .camera-header-row { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+    .camera-header-copy { min-width:0; }
+    .camera-return-button {
+      display:none;
+      width:auto;
+      min-width:150px;
+      margin:0;
+      padding:10px 14px;
+      border:1px solid var(--line);
+      background:#eef2f6;
+      color:var(--text);
+      white-space:nowrap;
+      flex:0 0 auto;
+    }
+    .camera-return-button.is-visible { display:inline-flex; align-items:center; justify-content:center; }
     @media (max-width: 520px) {
       .grid { grid-template-columns: 1fr; }
       .wrap { padding-left: 12px; padding-right: 12px; }
       .scanner { min-height: 330px; }
+      .camera-header-row { flex-direction:column; }
+      .camera-return-button.is-visible { width:100%; }
     }
     .test-camera-banner{display:none;padding:10px 12px;background:#fff3cd;border:2px solid #f59e0b;border-radius:12px;color:#7c2d12;font-weight:900;text-align:center;margin-bottom:12px}.test-mode .test-camera-banner{display:block}.test-mode header{border-color:#f59e0b}
 </style>
@@ -234,8 +251,13 @@
   <div id="testCameraBanner" class="test-camera-banner">スタッフテスト用カメラ<br>本番整理券は処理できません</div>
 <header>
   <div class="wrap" style="padding-bottom:0;">
-    <h1>バスツアー スタッフ用QRカメラ</h1>
-    <p class="sub">このページを開いたまま、来場者QRを連続で読み取って乗車処理します。</p>
+    <div class="camera-header-row">
+      <div class="camera-header-copy">
+        <h1>バスツアー スタッフ用QRカメラ</h1>
+        <p class="sub">このページを開いたまま、来場者QRを連続で読み取って乗車処理します。</p>
+      </div>
+      <button id="returnToStaffButton" class="camera-return-button" type="button" onclick="returnToStaffPage()">スタッフ画面に戻る</button>
+    </div>
   </div>
 </header>
 
@@ -296,6 +318,7 @@
   const STORAGE_PROCESS_API_URL = 'campusBusExternalCameraProcessApiUrlV2';
   const STORAGE_ADMIN_PIN = 'campusBusExternalCameraAdminPin'; // 旧版削除専用
   const STORAGE_STAFF_SESSION = 'campusBusExternalCameraStaffSessionV1';
+  const STORAGE_RETURN_URL = 'campusBusExternalCameraReturnUrlV1';
 
   let stream = null;
   let running = false;
@@ -312,6 +335,7 @@
   const SCAN_CANVAS_MAX = 980;
   let TEST_MODE = false;
   let TEST_TOKEN = '';
+  let STAFF_RETURN_URL = '';
 
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
@@ -328,6 +352,14 @@
     }
     const directProcessUrl = normalizeExecUrl(params.get('processApiUrl') || params.get('process_api_url') || params.get('mainAppUrl') || params.get('main_app_url') || localStorage.getItem(STORAGE_PROCESS_API_URL) || '');
     const legacyQrUrl = normalizeExecUrl(params.get('qrAppUrl') || params.get('qr_app_url') || localStorage.getItem(STORAGE_QR_APP_URL) || '');
+    const requestedReturnUrl = normalizeStaffReturnUrl(params.get('returnUrl') || '');
+    const savedReturnUrl = normalizeStaffReturnUrl(sessionStorage.getItem(STORAGE_RETURN_URL) || '');
+    STAFF_RETURN_URL = requestedReturnUrl || savedReturnUrl;
+    if (STAFF_RETURN_URL) {
+      try { sessionStorage.setItem(STORAGE_RETURN_URL, STAFF_RETURN_URL); } catch (err) {}
+      const returnButton = document.getElementById('returnToStaffButton');
+      if (returnButton) returnButton.classList.add('is-visible');
+    }
     const qrAppUrl = directProcessUrl || legacyQrUrl;
     const urlCredential = params.get('staffSession') || params.get('pin') || params.get('adminPin') || '';
     const savedSession = getSavedStaffSession();
@@ -344,10 +376,11 @@
     try { localStorage.removeItem(STORAGE_ADMIN_PIN); } catch (err) {}
 
     // URL履歴にスタッフパスワードを残さない。
-    if (params.has('staffSession') || params.has('pin') || params.has('adminPin')) {
+    if (params.has('staffSession') || params.has('pin') || params.has('adminPin') || params.has('returnUrl')) {
       params.delete('staffSession');
       params.delete('pin');
       params.delete('adminPin');
+      params.delete('returnUrl');
       const clean = location.pathname + (params.toString() ? '?' + params.toString() : '') + location.hash;
       history.replaceState(null, '', clean);
     }
@@ -405,6 +438,8 @@
 
     const authOk = typeof ensureStaffSession === 'function' && typeof getSavedStaffSession === 'function' && typeof saveStaffSession === 'function';
     add(authOk ? 'OK' : 'ERROR', 'CAMERA_STAFF_AUTH', 'スタッフ認証の引継ぎ', authOk ? '期限付きスタッフ認証の取得・保存・再利用処理があります。' : 'スタッフ認証の引継ぎ処理が不足しています。');
+    const sameTabReturnOk = typeof returnToStaffPage === 'function' && typeof normalizeStaffReturnUrl === 'function' && Boolean(document.getElementById('returnToStaffButton'));
+    add(sameTabReturnOk ? 'OK' : 'ERROR', 'CAMERA_SAME_TAB_RETURN', 'スタッフ画面への同一タブ復帰', sameTabReturnOk ? '新規タブを増やさず、同じタブでカメラ画面とスタッフ画面を往復できます。' : '同一タブで戻る処理が不足しています。');
 
     const continuousOk = typeof scanLoop === 'function' && typeof readQrFromVideo === 'function' && typeof handleScannedCode === 'function';
     add(continuousOk ? 'OK' : 'ERROR', 'CAMERA_CONTINUOUS_SCAN', '連続QR読取', continuousOk ? '映像解析→QR検出→乗車処理→次のQR受付の連続経路があります。' : '連続読取処理が不足しています。');
@@ -439,6 +474,30 @@
     if (!text) return '';
     text = text.replace(/\/dev(?:\?.*)?$/, '/exec');
     return text;
+  }
+
+  function normalizeStaffReturnUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== 'https:') return '';
+      if (parsed.hostname !== 'script.google.com' && parsed.hostname !== 'script.googleusercontent.com') return '';
+      return parsed.toString();
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function returnToStaffPage() {
+    const target = normalizeStaffReturnUrl(STAFF_RETURN_URL || sessionStorage.getItem(STORAGE_RETURN_URL) || '');
+    if (!target) {
+      setMessage('スタッフ画面の戻り先を取得できませんでした。ブラウザの戻る操作を使用してください。', 'error');
+      return;
+    }
+    stopCamera();
+    try { sessionStorage.removeItem(STORAGE_RETURN_URL); } catch (err) {}
+    location.assign(target);
   }
 
   function isStaffSessionToken(value) {
