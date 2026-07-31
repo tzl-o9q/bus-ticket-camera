@@ -80,6 +80,7 @@
       font-size: 16px;
       line-height: 1.65;
       font-weight: 800;
+      white-space: pre-line;
     }
     .notice { background: #eef4ff; color: #183b7a; }
     .error { background: #fff1f0; color: var(--danger); }
@@ -789,7 +790,7 @@
         const message = String((response && response.error) || '');
         if (response && response.ok) return response;
         if (attempt < 2 && /アクセスが集中|タイムアウト|一時的|Service invoked too many times/i.test(message)) {
-          setMessage('現在アクセスが集中しています。自動で再試行しています...', 'warn');
+          setMessage('現在アクセスが集中しています\n順番にご案内中です。そのままお待ちください。', 'warn');
           await wait(140 + Math.floor(Math.random() * 180));
           continue;
         }
