@@ -649,7 +649,7 @@
       const title = isAlready ? 'この整理券はすでに乗車確認済みです' : (r.processMessage || '乗車済みにしました。');
       const details = [r.departureLabel || r.departureTime || '', r.ticketNo || '', r.route || '', r.statusLabel || r.status || ''].filter(Boolean).join(' / ');
       setResult(true, title, details, isAlready ? 'already' : 'ok');
-      const holdMs = isAlready ? 1800 : 1200;
+      const holdMs = isAlready ? 1200 : 750;
       showBigResult(isAlready ? 'already' : 'ok', title, details, holdMs);
       setMessage(isAlready ? '乗車確認済みの整理券です。次のQRを読み取れます。' : '処理が完了しました。次のQRを読み取れます。', isAlready ? 'warn' : 'success');
       setScanLabel(isAlready ? '乗車確認済みです。次のQRコードを枠内に入れてください' : '次のQRコードを枠内に入れてください');
@@ -668,15 +668,36 @@
     }
   }
 
-  function boardByJsonp(rawCode) {
+  async function boardByJsonp(rawCode) {
     const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_PROCESS_API_URL) || localStorage.getItem(STORAGE_QR_APP_URL));
     const pin = String(document.getElementById('adminPinInput').value || localStorage.getItem(STORAGE_ADMIN_PIN) || '').trim();
-    return jsonp(qrAppUrl, {
-      api: 'boardJsonp',
-      pin: pin,
-      code: rawCode,
-      testToken: TEST_TOKEN
-    }, 20000);
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await jsonp(qrAppUrl, {
+          api: 'boardJsonp',
+          pin: pin,
+          code: rawCode,
+          testToken: TEST_TOKEN
+        }, 22000);
+        const message = String((response && response.error) || '');
+        if (response && response.ok) return response;
+        if (attempt === 0 && /アクセスが集中|タイムアウト|一時的|Service invoked too many times/i.test(message)) {
+          await wait(250 + Math.floor(Math.random() * 250));
+          continue;
+        }
+        return response;
+      } catch (err) {
+        lastError = err;
+        const message = errorText(err);
+        if (attempt === 0 && /タイムアウト|接続できません|network|通信/i.test(message)) {
+          await wait(250 + Math.floor(Math.random() * 250));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError || new Error('乗車処理に失敗しました。');
   }
 
   function jsonp(baseUrl, params, timeoutMs) {
