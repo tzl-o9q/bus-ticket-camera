@@ -239,10 +239,10 @@
 </header>
 
 <main class="wrap">
-  <div id="message" class="notice">読み取り準備中です。スタッフパスワードとQR処理ページURLを確認してください。</div>
+  <div id="message" class="notice">読み取り準備中です。スタッフパスワードと乗車処理API URLを確認してください。</div>
 
   <section class="panel" id="setupPanel">
-    <label for="qrAppUrlInput">スタッフ用QR処理ページURL（Apps Script /exec）</label>
+    <label for="qrAppUrlInput">乗車処理API URL（通常は自動入力）</label>
     <input id="qrAppUrlInput" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="url">
     <label for="adminPinInput">スタッフパスワード</label>
     <input id="adminPinInput" type="password" placeholder="Settingsシートの「スタッフパスワード」" autocomplete="current-password">
@@ -250,7 +250,7 @@
       <button class="primary" type="button" onclick="saveSettingsAndStart()">カメラを起動する</button>
       <button class="secondary" type="button" onclick="toggleSetup()">設定欄を閉じる</button>
     </div>
-    <p class="tiny">QR処理ページから開いた場合は自動入力されます。URL内のパスワードは読み込み後すぐ削除します。</p>
+    <p class="tiny">スタッフ画面から開いた場合は、最短経路の整理券ページAPIが自動入力されます。URL内の認証情報は読み込み後すぐ削除します。</p>
   </section>
 
   <section class="panel">
@@ -292,6 +292,7 @@
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 <script>
   const STORAGE_QR_APP_URL = 'campusBusExternalCameraQrAppUrl';
+  const STORAGE_PROCESS_API_URL = 'campusBusExternalCameraProcessApiUrlV2';
   const STORAGE_ADMIN_PIN = 'campusBusExternalCameraAdminPin';
 
   let stream = null;
@@ -316,14 +317,18 @@
 
   function init() {
     const params = new URLSearchParams(location.search);
-    const qrAppUrl = normalizeExecUrl(params.get('qrAppUrl') || params.get('qr_app_url') || localStorage.getItem(STORAGE_QR_APP_URL) || '');
+    const directProcessUrl = normalizeExecUrl(params.get('processApiUrl') || params.get('process_api_url') || params.get('mainAppUrl') || params.get('main_app_url') || localStorage.getItem(STORAGE_PROCESS_API_URL) || '');
+    const legacyQrUrl = normalizeExecUrl(params.get('qrAppUrl') || params.get('qr_app_url') || localStorage.getItem(STORAGE_QR_APP_URL) || '');
+    const qrAppUrl = directProcessUrl || legacyQrUrl;
     const pin = params.get('pin') || params.get('adminPin') || localStorage.getItem(STORAGE_ADMIN_PIN) || '';
     TEST_TOKEN = String(params.get('testToken') || params.get('test_token') || '').trim();
     TEST_MODE = String(params.get('testMode') || '').trim() === '1' || Boolean(TEST_TOKEN);
     if (TEST_MODE) document.body.classList.add('test-mode');
     document.getElementById('qrAppUrlInput').value = qrAppUrl;
     document.getElementById('adminPinInput').value = pin;
-    if (qrAppUrl) localStorage.setItem(STORAGE_QR_APP_URL, qrAppUrl);
+    if (directProcessUrl) localStorage.setItem(STORAGE_PROCESS_API_URL, directProcessUrl);
+    if (legacyQrUrl) localStorage.setItem(STORAGE_QR_APP_URL, legacyQrUrl);
+    if (qrAppUrl && !directProcessUrl && !legacyQrUrl) localStorage.setItem(STORAGE_PROCESS_API_URL, qrAppUrl);
     if (pin) localStorage.setItem(STORAGE_ADMIN_PIN, pin);
 
     // URL履歴にスタッフパスワードを残さない。
@@ -416,9 +421,9 @@
   function saveSettingsAndStart() {
     const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value);
     const pin = String(document.getElementById('adminPinInput').value || '').trim();
-    if (!qrAppUrl) return setMessage('スタッフ用QR処理ページURLを入力してください。', 'error');
+    if (!qrAppUrl) return setMessage('乗車処理API URLを入力してください。', 'error');
     if (!pin) return setMessage('スタッフパスワードを入力してください。', 'error');
-    localStorage.setItem(STORAGE_QR_APP_URL, qrAppUrl);
+    localStorage.setItem(STORAGE_PROCESS_API_URL, qrAppUrl);
     localStorage.setItem(STORAGE_ADMIN_PIN, pin);
     document.getElementById('qrAppUrlInput').value = qrAppUrl;
     document.getElementById('setupPanel').style.display = 'none';
@@ -431,8 +436,9 @@
   }
 
   function clearSavedSettings() {
-    if (!confirm('保存したQR処理ページURLとスタッフパスワードを削除しますか？')) return;
+    if (!confirm('保存した乗車処理API URLとスタッフパスワードを削除しますか？')) return;
     localStorage.removeItem(STORAGE_QR_APP_URL);
+    localStorage.removeItem(STORAGE_PROCESS_API_URL);
     localStorage.removeItem(STORAGE_ADMIN_PIN);
     document.getElementById('qrAppUrlInput').value = '';
     document.getElementById('adminPinInput').value = '';
@@ -441,13 +447,13 @@
   }
 
   async function startCamera() {
-    const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_QR_APP_URL));
+    const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_PROCESS_API_URL) || localStorage.getItem(STORAGE_QR_APP_URL));
     const pin = String(document.getElementById('adminPinInput').value || localStorage.getItem(STORAGE_ADMIN_PIN) || '').trim();
     if (!qrAppUrl || !pin) {
       document.getElementById('setupPanel').style.display = '';
-      return setMessage('カメラ起動前に、QR処理ページURLとスタッフパスワードを入力してください。', 'error');
+      return setMessage('カメラ起動前に、乗車処理API URLとスタッフパスワードを入力してください。', 'error');
     }
-    localStorage.setItem(STORAGE_QR_APP_URL, qrAppUrl);
+    localStorage.setItem(STORAGE_PROCESS_API_URL, qrAppUrl);
     localStorage.setItem(STORAGE_ADMIN_PIN, pin);
 
     try {
@@ -643,7 +649,7 @@
       const title = isAlready ? 'この整理券はすでに乗車確認済みです' : (r.processMessage || '乗車済みにしました。');
       const details = [r.departureLabel || r.departureTime || '', r.ticketNo || '', r.route || '', r.statusLabel || r.status || ''].filter(Boolean).join(' / ');
       setResult(true, title, details, isAlready ? 'already' : 'ok');
-      const holdMs = isAlready ? 3600 : 3000;
+      const holdMs = isAlready ? 1800 : 1200;
       showBigResult(isAlready ? 'already' : 'ok', title, details, holdMs);
       setMessage(isAlready ? '乗車確認済みの整理券です。次のQRを読み取れます。' : '処理が完了しました。次のQRを読み取れます。', isAlready ? 'warn' : 'success');
       setScanLabel(isAlready ? '乗車確認済みです。次のQRコードを枠内に入れてください' : '次のQRコードを枠内に入れてください');
@@ -652,7 +658,7 @@
     } catch (err) {
       const msg = errorText(err);
       setResult(false, '処理できませんでした', msg, 'error');
-      const holdMs = 3800;
+      const holdMs = 2600;
       showBigResult('error', '処理できませんでした', msg, holdMs);
       setMessage(msg, 'error');
       setScanLabel('もう一度QRコードを枠内に入れてください');
@@ -663,7 +669,7 @@
   }
 
   function boardByJsonp(rawCode) {
-    const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_QR_APP_URL));
+    const qrAppUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_PROCESS_API_URL) || localStorage.getItem(STORAGE_QR_APP_URL));
     const pin = String(document.getElementById('adminPinInput').value || localStorage.getItem(STORAGE_ADMIN_PIN) || '').trim();
     return jsonp(qrAppUrl, {
       api: 'boardJsonp',
@@ -675,7 +681,7 @@
 
   function jsonp(baseUrl, params, timeoutMs) {
     return new Promise((resolve, reject) => {
-      if (!baseUrl) return reject(new Error('QR処理ページURLが未設定です。'));
+      if (!baseUrl) return reject(new Error('乗車処理API URLが未設定です。'));
       const callbackName = '__busQrCb_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
       const script = document.createElement('script');
       const timer = setTimeout(() => {
@@ -694,7 +700,7 @@
       const query = new URLSearchParams(Object.assign({}, params, { callback: callbackName }));
       script.onerror = () => {
         cleanup();
-        reject(new Error('QR処理ページへ接続できませんでした。'));
+        reject(new Error('乗車処理APIへ接続できませんでした。'));
       };
       script.src = baseUrl + (baseUrl.indexOf('?') >= 0 ? '&' : '?') + query.toString();
       document.head.appendChild(script);
