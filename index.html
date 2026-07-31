@@ -322,6 +322,10 @@
 
   function init() {
     const params = new URLSearchParams(location.search);
+    if (String(params.get('preflight') || '') === '1') {
+      runCameraPreflightDiagnostics(params);
+      return;
+    }
     const directProcessUrl = normalizeExecUrl(params.get('processApiUrl') || params.get('process_api_url') || params.get('mainAppUrl') || params.get('main_app_url') || localStorage.getItem(STORAGE_PROCESS_API_URL) || '');
     const legacyQrUrl = normalizeExecUrl(params.get('qrAppUrl') || params.get('qr_app_url') || localStorage.getItem(STORAGE_QR_APP_URL) || '');
     const qrAppUrl = directProcessUrl || legacyQrUrl;
@@ -360,6 +364,74 @@
       try { detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (err) { detector = null; }
     }
     setMessage(TEST_MODE ? 'テスト用カメラです。「カメラを起動」を押してください。' : '準備できました。「カメラを起動」を押してください。', 'notice');
+  }
+
+  function cameraPreflightStorageProbe(storage) {
+    const key = 'campusBusCameraPreflight:' + Date.now() + ':' + Math.random().toString(36).slice(2);
+    try {
+      storage.setItem(key, 'ok');
+      const ok = storage.getItem(key) === 'ok';
+      storage.removeItem(key);
+      return ok;
+    } catch (err) { return false; }
+  }
+
+  function runCameraPreflightDiagnostics(params) {
+    const nonce = String(params.get('preflightNonce') || '');
+    const processApiUrl = normalizeExecUrl(params.get('processApiUrl') || params.get('process_api_url') || '');
+    const checks = [];
+    const add = (level, code, title, detail) => checks.push({ level, code, title, detail });
+    const secure = window.isSecureContext === true && location.protocol === 'https:';
+    add(secure ? 'OK' : 'ERROR', 'CAMERA_HTTPS', 'HTTPS・安全な接続', secure ? 'HTTPSの安全なコンテキストで開かれています。' : 'HTTPSではないためカメラを使用できません。');
+
+    const cameraApi = Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    add(cameraApi ? 'OK' : 'ERROR', 'CAMERA_MEDIA_API', 'カメラAPI', cameraApi ? 'getUserMediaを利用できます。' : 'この端末・ブラウザではカメラAPIを利用できません。ChromeまたはSafariで確認してください。');
+
+    const nativeDecoder = 'BarcodeDetector' in window;
+    const fallbackDecoder = typeof window.jsQR === 'function';
+    add(nativeDecoder || fallbackDecoder ? 'OK' : 'ERROR', 'CAMERA_QR_DECODER', 'QR解析機能', nativeDecoder && fallbackDecoder ? 'BarcodeDetectorとjsQRの両方を利用できます。' : (nativeDecoder ? 'BarcodeDetectorを利用できます。' : (fallbackDecoder ? 'jsQRを利用できます。' : 'QR解析ライブラリを読み込めません。')));
+    add(fallbackDecoder ? 'OK' : 'WARN', 'CAMERA_QR_FALLBACK', 'QR解析の予備経路', fallbackDecoder ? '小さい・高密度なQR向けのjsQR予備解析を利用できます。' : 'jsQRを読み込めないため、BarcodeDetector非対応端末で読取できません。CDN接続を確認してください。');
+
+    const canvasOk = Boolean(canvas && ctx && typeof ctx.getImageData === 'function');
+    add(canvasOk ? 'OK' : 'ERROR', 'CAMERA_CANVAS', '映像フレーム解析', canvasOk ? 'Canvasから映像を読み取る準備ができています。' : '映像フレームを解析できません。');
+
+    const localOk = cameraPreflightStorageProbe(localStorage);
+    const sessionOk = cameraPreflightStorageProbe(sessionStorage);
+    add(localOk ? 'OK' : 'WARN', 'CAMERA_LOCAL_STORAGE', 'スタッフ認証・API設定の保持', localOk ? 'localStorageの読み書きを確認しました。' : 'localStorageを利用できないため、再読込後に認証やURLの再入力が必要になる場合があります。');
+    add(sessionOk ? 'OK' : 'INFO', 'CAMERA_SESSION_STORAGE', '一時保存機能', sessionOk ? 'sessionStorageの読み書きを確認しました。' : 'sessionStorageは利用できませんが、主要処理はlocalStorageで動作します。');
+
+    const apiOk = /^https:\/\//i.test(processApiUrl) && /\/exec(?:$|\?)/i.test(processApiUrl);
+    add(apiOk ? 'OK' : 'ERROR', 'CAMERA_PROCESS_API', '乗車処理API URL', apiOk ? 'メインApps ScriptのHTTPS /exec URLを受け取りました。' : '乗車処理API URLが未設定または/exec形式ではありません。スタッフ画面からカメラを開いてください。');
+
+    const authOk = typeof ensureStaffSession === 'function' && typeof getSavedStaffSession === 'function' && typeof saveStaffSession === 'function';
+    add(authOk ? 'OK' : 'ERROR', 'CAMERA_STAFF_AUTH', 'スタッフ認証の引継ぎ', authOk ? '期限付きスタッフ認証の取得・保存・再利用処理があります。' : 'スタッフ認証の引継ぎ処理が不足しています。');
+
+    const continuousOk = typeof scanLoop === 'function' && typeof readQrFromVideo === 'function' && typeof handleScannedCode === 'function';
+    add(continuousOk ? 'OK' : 'ERROR', 'CAMERA_CONTINUOUS_SCAN', '連続QR読取', continuousOk ? '映像解析→QR検出→乗車処理→次のQR受付の連続経路があります。' : '連続読取処理が不足しています。');
+
+    const directApiOk = typeof boardByJsonp === 'function' && typeof jsonp === 'function' && typeof warmupBoardingApi === 'function';
+    add(directApiOk ? 'OK' : 'ERROR', 'CAMERA_DIRECT_API', '直接乗車処理・事前接続', directApiOk ? 'メインアプリへの直接JSONP処理とウォームアップ経路があります。' : '乗車処理APIの呼出し経路が不足しています。');
+
+    const retryOk = typeof boardByJsonp === 'function' && typeof wait === 'function';
+    add(retryOk ? 'OK' : 'ERROR', 'CAMERA_RETRY', '通信混雑時の自動再試行', retryOk ? '一時的な混雑・通信失敗時に安全に再試行する処理があります。' : '再試行処理が不足しています。');
+
+    const congestionOk = typeof startCongestionHint === 'function' && typeof fetchTrafficStatusForCamera === 'function';
+    add(congestionOk ? 'OK' : 'ERROR', 'CAMERA_CONGESTION', 'アクセス集中表示', congestionOk ? '処理時間とアクセス数を確認して混雑表示する経路があります。' : '混雑表示の判定処理が不足しています。');
+
+    const separationOk = typeof TEST_MODE !== 'undefined' && typeof TEST_TOKEN !== 'undefined' && typeof normalizeScannedText === 'function';
+    add(separationOk ? 'OK' : 'ERROR', 'CAMERA_TEST_SEPARATION', '本番・テストカメラの分離', separationOk ? 'testTokenを保持し、本番・テストの乗車処理を分離できます。' : 'テストモード分離処理が不足しています。');
+
+    add('INFO', 'CAMERA_PERMISSION_MANUAL', 'カメラ権限と実映像', '診断ではカメラ権限ダイアログを自動表示しません。開催前に実機で「カメラを起動」し、QRを1件読み取って確認してください。');
+
+    const payload = { type:'CAMPUS_BUS_CAMERA_PREFLIGHT_V1', nonce, version:'2026.08.01-camera-preflight-1', checks };
+    try { if (window.parent && window.parent !== window) window.parent.postMessage(payload, '*'); } catch (err) {}
+    try { if (window.opener) window.opener.postMessage(payload, '*'); } catch (err) {}
+    const errors = checks.filter(c => c.level === 'ERROR').length;
+    setMessage(errors ? 'カメラページ診断でエラーが見つかりました。スタッフ画面で詳細を確認してください。' : 'カメラページ診断が完了しました。スタッフ画面へ戻って結果を確認してください。', errors ? 'error' : 'success');
+    const scannerPanel = document.getElementById('scannerPanel');
+    const setupPanel = document.getElementById('setupPanel');
+    if (scannerPanel) scannerPanel.style.display = 'none';
+    if (setupPanel) setupPanel.style.display = 'none';
   }
 
   function normalizeExecUrl(url) {
