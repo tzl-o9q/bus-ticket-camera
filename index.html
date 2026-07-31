@@ -596,13 +596,26 @@
     }
   }
 
+  async function fetchTrafficStatusForCamera() {
+    try {
+      const apiUrl = normalizeExecUrl(document.getElementById('qrAppUrlInput').value || localStorage.getItem(STORAGE_PROCESS_API_URL) || localStorage.getItem(STORAGE_QR_APP_URL));
+      if (!apiUrl) return null;
+      return await jsonp(apiUrl, { api: 'trafficJsonp' }, 5000);
+    } catch (err) {
+      return null;
+    }
+  }
+
   function startCongestionHint() {
     clearTimeout(congestionHintTimer);
-    congestionHintTimer = setTimeout(() => {
+    congestionHintTimer = setTimeout(async () => {
       if (!processing) return;
+      const response = await fetchTrafficStatusForCamera();
+      const traffic = response && (response.traffic || response.result || response);
+      if (!processing || !traffic || traffic.highLoad !== true) return;
       setMessage('現在アクセスが集中しているため、乗車処理に時間がかかっています。順番に処理していますので、そのままお待ちください。', 'warn');
       setScanLabel('アクセス集中のため順番に処理しています...');
-    }, 1400);
+    }, 2800);
   }
 
   function stopCongestionHint() {
