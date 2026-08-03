@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="dns-prefetch" href="//cdn.jsdelivr.net">
   <title>バスツアー スタッフ用QRカメラ</title>
   <style>
     :root {
@@ -333,7 +335,7 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 <script>
   const STORAGE_QR_APP_URL = 'campusBusExternalCameraQrAppUrl';
   const STORAGE_PROCESS_API_URL = 'campusBusExternalCameraProcessApiUrlV2';
@@ -359,6 +361,11 @@
   let congestionHintTimer = null;
   let warmupPromise = null;
   let scanFrameCounter = 0;
+  let scanScheduleHandle = 0;
+  let scanScheduleKind = '';
+  let lastScanAttemptAt = 0;
+  const NATIVE_SCAN_MIN_INTERVAL_MS = 55;
+  const FALLBACK_SCAN_MIN_INTERVAL_MS = 85;
   let scanHistory = [];
   const SCAN_CANVAS_MAX = 980;
   let TEST_MODE = false;
@@ -371,6 +378,7 @@
 
   window.addEventListener('DOMContentLoaded', init);
   window.addEventListener('pagehide', stopCamera);
+  document.addEventListener('visibilitychange', handleCameraVisibilityChange);
 
   function init() {
     const params = new URLSearchParams(location.search);
@@ -473,6 +481,8 @@
 
     const continuousOk = typeof scanLoop === 'function' && typeof readQrFromVideo === 'function' && typeof handleScannedCode === 'function';
     add(continuousOk ? 'OK' : 'ERROR', 'CAMERA_CONTINUOUS_SCAN', '連続QR読取', continuousOk ? '映像解析→QR検出→乗車処理→次のQR受付の連続経路があります。' : '連続読取処理が不足しています。');
+    const frameSchedulerOk = typeof scheduleScanLoop_ === 'function' && typeof cancelScheduledScan_ === 'function' && NATIVE_SCAN_MIN_INTERVAL_MS >= 40 && FALLBACK_SCAN_MIN_INTERVAL_MS >= NATIVE_SCAN_MIN_INTERVAL_MS;
+    add(frameSchedulerOk ? 'OK' : 'ERROR', 'CAMERA_FRAME_SCHEDULER', '映像フレーム解析の負荷分散', frameSchedulerOk ? '対応端末ではrequestVideoFrameCallbackを使い、同じ映像フレームの過剰解析と非表示中の解析を停止します。' : '映像フレームの負荷分散処理が不足しています。');
 
     const directApiOk = typeof boardByJsonp === 'function' && typeof jsonp === 'function' && typeof warmupBoardingApi === 'function';
     add(directApiOk ? 'OK' : 'ERROR', 'CAMERA_DIRECT_API', '直接乗車処理・事前接続', directApiOk ? 'メインアプリへの直接JSONP処理とウォームアップ経路があります。' : '乗車処理APIの呼出し経路が不足しています。');
@@ -495,7 +505,7 @@
 
     add('INFO', 'CAMERA_PERMISSION_MANUAL', 'カメラ権限と実映像', '診断ではカメラ権限ダイアログを自動表示しません。開催前に実機で「カメラを起動」し、QRを1件読み取って確認してください。');
 
-    const payload = { type:'CAMPUS_BUS_CAMERA_PREFLIGHT_V1', nonce, version:'2026.08.03-camera-history-jitter-2', checks };
+    const payload = { type:'CAMPUS_BUS_CAMERA_PREFLIGHT_V1', nonce, version:'2026.08.03-deep-performance-1', checks };
     try { if (window.parent && window.parent !== window) window.parent.postMessage(payload, '*'); } catch (err) {}
     try { if (window.opener) window.opener.postMessage(payload, '*'); } catch (err) {}
     const errors = checks.filter(c => c.level === 'ERROR').length;
@@ -785,7 +795,7 @@
       scanLoopStartedAt = Date.now();
       setMessage('カメラ起動中です。来場者のQRコードを枠内に入れてください。読み取ると自動で乗車処理します。', 'success');
       setScanLabel('QRコードを枠内に入れてください');
-      requestAnimationFrame(scanLoop);
+      scheduleScanLoop_();
     } catch (err) {
       running = false;
       setScanLabel('カメラを起動できません');
@@ -828,9 +838,63 @@
     } catch (err) {}
   }
 
+  function cancelScheduledScan_() {
+    if (!scanScheduleHandle) return;
+    try {
+      if (scanScheduleKind === 'video' && video && typeof video.cancelVideoFrameCallback === 'function') {
+        video.cancelVideoFrameCallback(scanScheduleHandle);
+      } else if (scanScheduleKind === 'timeout') {
+        clearTimeout(scanScheduleHandle);
+      } else {
+        cancelAnimationFrame(scanScheduleHandle);
+      }
+    } catch (err) {}
+    scanScheduleHandle = 0;
+    scanScheduleKind = '';
+  }
+
+  function scheduleScanLoop_(delayMs = 0) {
+    if (!running || scanScheduleHandle || document.hidden) return;
+    const delay = Math.max(Number(delayMs || 0), 0);
+    if (delay > 0) {
+      scanScheduleKind = 'timeout';
+      scanScheduleHandle = setTimeout(() => {
+        scanScheduleHandle = 0;
+        scanScheduleKind = '';
+        scheduleScanLoop_();
+      }, delay);
+      return;
+    }
+    if (video && typeof video.requestVideoFrameCallback === 'function') {
+      scanScheduleKind = 'video';
+      scanScheduleHandle = video.requestVideoFrameCallback(() => {
+        scanScheduleHandle = 0;
+        scanScheduleKind = '';
+        scanLoop();
+      });
+      return;
+    }
+    scanScheduleKind = 'animation';
+    scanScheduleHandle = requestAnimationFrame(() => {
+      scanScheduleHandle = 0;
+      scanScheduleKind = '';
+      scanLoop();
+    });
+  }
+
+  function handleCameraVisibilityChange() {
+    if (document.hidden) {
+      cancelScheduledScan_();
+      return;
+    }
+    if (running) scheduleScanLoop_();
+  }
+
   function stopCamera() {
     running = false;
     processing = false;
+    cancelScheduledScan_();
+    lastScanAttemptAt = 0;
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
       stream = null;
@@ -875,10 +939,21 @@
   }
 
   async function scanLoop() {
-    if (!running || processing) {
-      if (running) requestAnimationFrame(scanLoop);
+    if (!running) return;
+    if (document.hidden || processing) {
+      scheduleScanLoop_(processing ? 90 : 180);
       return;
     }
+
+    const frameNow = performance.now();
+    const minimumInterval = detector ? NATIVE_SCAN_MIN_INTERVAL_MS : FALLBACK_SCAN_MIN_INTERVAL_MS;
+    const remaining = minimumInterval - (frameNow - lastScanAttemptAt);
+    if (lastScanAttemptAt && remaining > 1) {
+      scheduleScanLoop_(remaining);
+      return;
+    }
+    lastScanAttemptAt = frameNow;
+
     try {
       const code = await readQrFromVideo();
       const now = Date.now();
@@ -905,7 +980,7 @@
         if (now - lastReadAt >= 700) lastCode = '';
       }
     } catch (err) {}
-    if (running) requestAnimationFrame(scanLoop);
+    scheduleScanLoop_();
   }
 
   async function readQrFromVideo() {
